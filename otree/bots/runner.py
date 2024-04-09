@@ -4,11 +4,12 @@ import os
 from pathlib import Path
 from typing import List
 
+
 import otree.common
 import otree.export
 import otree.session
 from otree import settings
-from otree.common import get_bots_module, get_main_module
+from otree.common import get_bots_module, get_models_module
 from otree.constants import AUTO_NAME_BOTS_EXPORT_FOLDER
 from otree.database import values_flat, db
 from otree.models import Session, Participant
@@ -63,16 +64,26 @@ class SessionBotRunner:
 
 
 def make_bots(*, session_pk, case_number, use_browser_bots) -> List[ParticipantBot]:
-    update_kwargs = {Participant._is_bot: True}
-    if use_browser_bots:
-        update_kwargs[Participant.is_browser_bot] = True
-
-    Participant.objects_filter(session_id=session_pk).update(update_kwargs)
-    bots = []
-
     # can't use .distinct('player_pk') because it only works on Postgres
     # this implicitly orders by round also
     session = Session.objects_get(id=session_pk)
+    update_kwargs = {Participant._is_bot: True}
+    if use_browser_bots:
+        update_kwargs[Participant.is_browser_bot] = True
+    id_in_session_not_bot= session.config.get('id_in_session_list_bots',[])
+
+    Participant.objects_filter(session_id=session_pk).update(update_kwargs)
+
+
+    if len(id_in_session_not_bot) > 0:
+        for id_in_session in id_in_session_not_bot:
+            Participant.objects_filter(session_id=session_pk, id_in_session=id_in_session).update({
+                Participant._is_bot: False,
+                Participant.is_browser_bot:False} )
+
+    bots = []
+
+
 
     participant_codes = values_flat(session.pp_set.order_by('id'), Participant.code)
 
@@ -80,7 +91,7 @@ def make_bots(*, session_pk, case_number, use_browser_bots) -> List[ParticipantB
 
     for app_name in session.config['app_sequence']:
         bots_module = get_bots_module(app_name)
-        models_module = get_main_module(app_name)
+        models_module = get_models_module(app_name)
         Player = models_module.Player
         players = (
             Player.objects_filter(session_id=session_pk)
@@ -139,7 +150,8 @@ def run_all_bots_for_session_config(session_config_name, num_participants, expor
             config = SESSION_CONFIGS_DICT[config_name]
         except KeyError:
             # important to alert the user, since people might be trying to enter app names.
-            raise Exception(f"No session config with name '{config_name}'.")
+            msg = f"No session config with name '{config_name}'."
+            raise Exception(msg) from None
 
         num_bot_cases = config.get_num_bot_cases()
         for case_number in range(num_bot_cases):
@@ -167,7 +179,7 @@ def run_all_bots_for_session_config(session_config_name, num_participants, expor
         os.makedirs(export_path, exist_ok=True)
 
         for app in settings.OTREE_APPS:
-            model_module = otree.common.get_main_module(app)
+            model_module = otree.common.get_models_module(app)
             if model_module.Player.objects_exists():
                 fpath = Path(export_path, "{}.csv".format(app))
                 with fpath.open("w", newline='', encoding="utf8") as fp:
